@@ -623,18 +623,18 @@ class ProductionBackendAdapter implements BackendPort {
         };
       }
       const parsed = data as {
-        isAuthenticatedAdmin?: boolean;
-        adminRole?: 'super_admin' | 'curriculum_editor' | null;
+        isAdmin?: boolean;
+        roleName?: 'super_admin' | 'curriculum_editor' | null;
       };
       return {
-        isAuthenticatedAdmin: Boolean(parsed.isAuthenticatedAdmin),
-        adminRole: parsed.adminRole ?? null,
+        isAuthenticatedAdmin: Boolean(parsed.isAdmin),
+        adminRole: parsed.roleName ?? null,
         email: userResp?.user?.email ?? null,
-        authMethod: parsed.isAuthenticatedAdmin
+        authMethod: parsed.isAdmin
           ? 'supabase_admin_auth'
           : 'unauthenticated',
-        detailAr: parsed.isAuthenticatedAdmin
-          ? `تم التحقق من صلاحية المشرف (${parsed.adminRole}) على الخادم.`
+        detailAr: parsed.isAdmin
+          ? `تم التحقق من صلاحية المشرف (${parsed.roleName}) على الخادم.`
           : 'غير مصرح كمشرف في قاعدة البيانات.',
       };
     } catch {

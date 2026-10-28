@@ -85,15 +85,31 @@ export async function resolveProductionSessionIdentity(
     }
 
     if (displayName && displayName.trim().length > 0) {
-      const {data: profile, error: profileError} = await client.rpc('rpc_ensure_student_session', {
-        p_display_name: displayName.trim(),
-        p_avatar_id: avatarId ?? 'girl-noor',
-        p_content_version_id: env.contentVersionId,
-      });
+      const { data: profile, error: profileError } = await client.rpc(
+        'rpc_ensure_student_session',
+        {
+          p_display_name: displayName.trim(),
+          p_avatar_id: avatarId ?? 'girl-noor',
+          p_content_version_id: env.contentVersionId,
+        }
+      );
       if (profileError || !profile?.studentId) {
-        return {studentId:null,authProvider:'unconfigured',errorAr:'تعذّر حفظ ملف الطالب. راجع إعدادات المحتوى وصلاحيات قاعدة البيانات.'};
+        console.error(
+          'Supabase rpc_ensure_student_session error:',
+          profileError
+        );
+        return {
+          studentId: null,
+          authProvider: 'unconfigured',
+          errorAr: `تعذّر حفظ ملف الطالب على الخادم (${
+            profileError?.message ?? 'استجابة غير مكتملة'
+          }).`,
+        };
       }
-      return {studentId:asStudentId(String(profile.studentId)),authProvider:'supabase_anonymous'};
+      return {
+        studentId: asStudentId(String(profile.studentId)),
+        authProvider: 'supabase_anonymous',
+      };
     }
 
     return {

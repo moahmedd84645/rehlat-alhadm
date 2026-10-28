@@ -679,11 +679,12 @@ CREATE OR REPLACE FUNCTION public.rpc_submit_activity_attempt(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_uid uuid;
   v_student_id text;
+  v_journey_id uuid;
   v_existing_sub RECORD;
   v_run RECORD;
   v_level RECORD;
@@ -704,6 +705,9 @@ DECLARE
   v_badge_id text;
   v_badge_title text;
   v_response jsonb;
+  v_act_count integer;
+  v_next_run_number integer;
+  v_auto_run_id text;
 BEGIN
   v_uid := auth.uid();
   IF v_uid IS NULL THEN
@@ -723,11 +727,6 @@ BEGIN
   IF v_student_id IS NULL THEN
     RAISE EXCEPTION 'PROFILE_NOT_FOUND: لم يتم العثور على ملف الطالب المرتبط بالجلسة.';
   END IF;
-
-  -- Concurrency protection: acquire transaction-scoped advisory lock per (student, run, activity)
-  PERFORM pg_advisory_xact_lock(
-    hashtext(v_student_id || '::' || coalesce(p_run_id, '') || '::' || coalesce(p_activity_id, ''))
-  );
 
   -- 1. Idempotency check: if this idempotency_key was already processed, return stored result
   SELECT submission_id, auth_user_id, response_payload_json
@@ -785,7 +784,7 @@ BEGIN
     END IF;
   END IF;
 
-  -- 4. Lock & validate the scored level run row
+  -- 4. Lock & validate the scored level run row (support exact match or active in_progress run)
   SELECT * INTO v_run
   FROM public.scored_level_runs
   WHERE run_id = p_run_id
@@ -796,6 +795,55 @@ BEGIN
   FOR UPDATE;
 
   IF NOT FOUND THEN
+    SELECT * INTO v_run
+    FROM public.scored_level_runs
+    WHERE student_id = v_student_id
+      AND auth_user_id = v_uid
+      AND content_version_id = p_content_version_id
+      AND level_id = p_level_id
+      AND status = 'in_progress'
+    ORDER BY created_at DESC
+    LIMIT 1
+    FOR UPDATE;
+  END IF;
+
+  IF NOT FOUND THEN
+    SELECT journey_id INTO v_journey_id
+    FROM public.student_journeys
+    WHERE student_id = v_student_id
+      AND content_version_id = p_content_version_id
+      AND status = 'active'
+    ORDER BY started_at DESC
+    LIMIT 1;
+
+    IF v_journey_id IS NOT NULL THEN
+      SELECT count(*) INTO v_act_count
+      FROM public.curriculum_activities
+      WHERE content_version_id = p_content_version_id
+        AND level_id = p_level_id;
+
+      SELECT coalesce(max(run_number), 0) + 1 INTO v_next_run_number
+      FROM public.scored_level_runs
+      WHERE journey_id = v_journey_id
+        AND level_id = p_level_id;
+
+      v_auto_run_id := 'run_' || encode(extensions.gen_random_bytes(8), 'hex');
+
+      INSERT INTO public.scored_level_runs (
+        run_id, journey_id, student_id, auth_user_id, content_version_id,
+        level_id, run_number, status, score_earned, max_possible_score,
+        completed_activities_count, total_activities_count
+      )
+      VALUES (
+        v_auto_run_id, v_journey_id, v_student_id, v_uid, p_content_version_id,
+        p_level_id, v_next_run_number, 'in_progress', 0, v_level.max_possible_score,
+        0, GREATEST(v_act_count, 1)
+      )
+      RETURNING * INTO v_run;
+    END IF;
+  END IF;
+
+  IF v_run.run_id IS NULL THEN
     RAISE EXCEPTION 'RUN_NOT_FOUND: جولة المستوى المحددة غير صالحة أو لا تخص هذا الطالب.';
   END IF;
 
@@ -822,7 +870,7 @@ BEGIN
     v_existing_attempts_count,
     v_already_solved
   FROM public.activity_submissions
-  WHERE run_id = p_run_id
+  WHERE run_id = v_run.run_id
     AND activity_id = p_activity_id;
 
   IF v_already_solved OR v_existing_attempts_count >= 2 THEN
@@ -854,12 +902,12 @@ BEGIN
   END IF;
 
   -- 8. Build state-appropriate feedback payload (NEVER leak solution or explanation on 1st wrong attempt!)
-  v_submission_id := 'sub_' || encode(gen_random_bytes(10), 'hex');
+  v_submission_id := 'sub_' || encode(extensions.gen_random_bytes(10), 'hex');
 
   IF v_is_correct THEN
     v_response := jsonb_build_object(
       'submissionId', v_submission_id,
-      'runId', p_run_id,
+      'runId', v_run.run_id,
       'activityId', p_activity_id,
       'attemptNumber', v_attempt_number,
       'isCorrect', true,
@@ -875,7 +923,7 @@ BEGIN
     -- First wrong submission: reveal ONLY the single activity-specific hint!
     v_response := jsonb_build_object(
       'submissionId', v_submission_id,
-      'runId', p_run_id,
+      'runId', v_run.run_id,
       'activityId', p_activity_id,
       'attemptNumber', 1,
       'isCorrect', false,
@@ -891,7 +939,7 @@ BEGIN
     -- Second wrong submission: 0 points, activity completed, reveal correct solution & explanation
     v_response := jsonb_build_object(
       'submissionId', v_submission_id,
-      'runId', p_run_id,
+      'runId', v_run.run_id,
       'activityId', p_activity_id,
       'attemptNumber', 2,
       'isCorrect', false,
@@ -912,7 +960,7 @@ BEGIN
     is_correct, score_earned, max_score, duration_ms, response_payload_json
   )
   VALUES (
-    v_submission_id, p_idempotency_key, p_run_id, v_run.journey_id, v_student_id, v_uid,
+    v_submission_id, p_idempotency_key, v_run.run_id, v_run.journey_id, v_student_id, v_uid,
     p_content_version_id, p_level_id, p_activity_id, v_attempt_number, btrim(coalesce(p_submitted_answer, '')),
     v_is_correct, v_score_earned, v_activity.max_score, GREATEST(coalesce(p_duration_ms, 0), 0), v_response
   );
@@ -925,7 +973,7 @@ BEGIN
     v_completed_in_run,
     v_run_total_score
   FROM public.activity_submissions
-  WHERE run_id = p_run_id;
+  WHERE run_id = v_run.run_id;
 
   IF v_completed_in_run >= v_run.total_activities_count THEN
     v_is_level_now_completed := true;
@@ -935,7 +983,7 @@ BEGIN
         score_earned = v_run_total_score,
         status = 'completed',
         completed_at = now()
-    WHERE run_id = p_run_id;
+    WHERE run_id = v_run.run_id;
 
     -- Upsert best completed level score: lower replay scores NEVER replace higher scores!
     INSERT INTO public.student_level_best_scores (
@@ -965,14 +1013,14 @@ BEGIN
     )
     VALUES (
       v_student_id, p_content_version_id, v_badge_id, v_uid,
-      p_level_id, v_badge_title, p_run_id
+      p_level_id, v_badge_title, v_run.run_id
     )
     ON CONFLICT (student_id, content_version_id, badge_id) DO NOTHING;
   ELSE
     UPDATE public.scored_level_runs
     SET completed_activities_count = v_completed_in_run,
         score_earned = v_run_total_score
-    WHERE run_id = p_run_id;
+    WHERE run_id = v_run.run_id;
 
     SELECT best_completed_score INTO v_best_score
     FROM public.student_level_best_scores
@@ -1004,7 +1052,7 @@ CREATE OR REPLACE FUNCTION public.rpc_start_level_replay(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_uid uuid;
@@ -1079,7 +1127,7 @@ BEGIN
   WHERE content_version_id = p_content_version_id
     AND level_id = p_level_id;
 
-  v_new_run_id := 'run_' || encode(gen_random_bytes(8), 'hex');
+  v_new_run_id := 'run_' || encode(extensions.gen_random_bytes(8), 'hex');
 
   INSERT INTO public.scored_level_runs (
     run_id, journey_id, student_id, auth_user_id, content_version_id,
@@ -1505,7 +1553,7 @@ CREATE OR REPLACE FUNCTION public.rpc_start_full_replay(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_uid uuid;
@@ -1579,7 +1627,7 @@ BEGIN
     WHERE content_version_id = p_content_version_id
       AND level_id = v_lvl.level_id;
 
-    v_new_run_id := 'run_' || encode(gen_random_bytes(8), 'hex');
+    v_new_run_id := 'run_' || encode(extensions.gen_random_bytes(8), 'hex');
     INSERT INTO public.scored_level_runs (
       run_id, journey_id, student_id, auth_user_id, content_version_id,
       level_id, run_number, status, score_earned, max_possible_score,

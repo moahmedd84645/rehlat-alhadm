@@ -189,7 +189,8 @@ export const AppShell: React.FC<AppShellProps> = ({
         setBackendHealth(report);
         if (
           report.mode === 'production' &&
-          report.status !== 'production_connected'
+          (report.status === 'production_unconfigured' ||
+            report.status === 'production_unreachable')
         ) {
           setProductionBackendError(report.messageAr);
         } else {
@@ -820,8 +821,12 @@ export const AppShell: React.FC<AppShellProps> = ({
             <ShieldAlert size={20} aria-hidden="true" />
             <div>
               <strong>تعذّر الاتصال لحفظ تقدمك</strong>
-              <p>اختياراتك محفوظة على الشاشة. حاول مرة تانية بعد رجوع الاتصال، أو اطلب مساعدة مسؤول الموقع.</p>
-              {env.enableDiagnostics && activeScreen === 'admin' && <p>{productionBackendError}</p>}
+              <p>اختياراتك محفوظة على الشاشة. حاول مرة ثانية بعد رجوع الاتصال، أو اطلب مساعدة مسؤول الموقع.</p>
+              {env.enableDiagnostics && (
+                <p style={{ fontSize: '0.82rem', marginTop: '0.35rem', opacity: 0.85 }}>
+                  {productionBackendError}
+                </p>
+              )}
             </div>
           </div>
         )}
