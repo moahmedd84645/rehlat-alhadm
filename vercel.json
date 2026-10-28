@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "env": {
+    "VITE_APP_MODE": "production",
+    "VITE_CONTENT_VERSION": "content-ar-g6-digestion-v1.4.0",
+    "VITE_SUPABASE_URL": "https://ariqmefrbkxusjqxfftc.supabase.co",
+    "VITE_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_cBs6Nr_ZGWCaqZ9hhQJZAg_nP8x18yP"
+  },
+  "build": {
+    "env": {
+      "VITE_APP_MODE": "production",
+      "VITE_CONTENT_VERSION": "content-ar-g6-digestion-v1.4.0",
+      "VITE_SUPABASE_URL": "https://ariqmefrbkxusjqxfftc.supabase.co",
+      "VITE_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_cBs6Nr_ZGWCaqZ9hhQJZAg_nP8x18yP"
+    }
+  }
+}
